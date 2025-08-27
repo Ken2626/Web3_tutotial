@@ -5,18 +5,20 @@ import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/shared/interf
 contract FundMe {
     mapping(address => uint256) public fundersToAmount;
     uint256 constant MINIMUM_VALUE = 1 * 1e18;
-    AggregatorV3Interface internal dataFeed;
+    AggregatorV3Interface public dataFeed;
     uint256 constant TARGET = 2 * 1e18;
     address public owner;
     uint256 deploymentTimeStamp;
     uint256 lockTime;
     address erc20Addr;
-         bool public getFundSuccess = false;
-
-    constructor(uint256 _lockTime) {
+    bool public getFundSuccess = false;
+    event FundWithdrawByOwner(uint256);
+    event ReFundByFunder(address,uint256);
+    constructor(uint256 _lockTime, address dataFeedAddr) {
         //sepolia testnet
         dataFeed = AggregatorV3Interface(
-            0x694AA1769357215DE4FAC081bf1f309aDC325306
+            dataFeedAddr
+            //0x694AA1769357215DE4FAC081bf1f309aDC325306
         );
         owner = msg.sender;
         deploymentTimeStamp = block.timestamp;
@@ -25,6 +27,10 @@ contract FundMe {
 
     function fund() external payable {
         require(
+            convertETHToUSD(msg.value) <= TARGET,
+            "You need to send less ETH than Target!"
+        );
+        require(
             convertETHToUSD(msg.value) >= MINIMUM_VALUE,
             "You need to send more ETH!"
         );
@@ -32,7 +38,7 @@ contract FundMe {
             block.timestamp < deploymentTimeStamp + lockTime,
             "window is closed."
         );
-        fundersToAmount[msg.sender] = msg.value;
+        fundersToAmount[msg.sender] += msg.value;
     }
 
     /**
@@ -50,13 +56,9 @@ contract FundMe {
         return answer;
     }
 
-    function convertETHToUSD(uint256 ethAmount)
-        internal
-        view
-        returns (uint256)
-    {
+    function convertETHToUSD(uint256 ethAmount) public view returns (uint256) {
         uint256 ethPrice = uint256(getChainlinkDataFeedLatestAnswer());
-        return (ethAmount * ethPrice) / (10**8);
+        return (ethAmount * ethPrice) / (10 ** 8);
     }
 
     function getFund() external windowClosed onlyOwner {
@@ -69,12 +71,11 @@ contract FundMe {
 
         // bool success = payable(msg.sender).send(address(this).balance);
         // require(success,"tx failed.");
-
-        (getFundSuccess, ) = payable(msg.sender).call{value: address(this).balance}(
-            ""
-        );
+        uint256 balance = address(this).balance;
+        (getFundSuccess, ) = payable(msg.sender).call{value: balance}("");
         require(getFundSuccess, "tx failed.");
         //fundersToAmount[msg.sender]=0?
+        emit FundWithdrawByOwner(balance);
     }
 
     function refund() external windowClosed {
@@ -84,16 +85,18 @@ contract FundMe {
         bool success;
         (success, ) = payable(msg.sender).call{value: amount}("");
         require(success, "tx failed.");
-        fundersToAmount[msg.sender];
+        fundersToAmount[msg.sender] -= amount;
+        emit ReFundByFunder(msg.sender,amount);
     }
 
     function setErc20Addr(address _erc20Addr) external onlyOwner {
         erc20Addr = _erc20Addr;
     }
 
-    function setFunderToAmount(address funder, uint256 amountToUpdate)
-        external
-    {
+    function setFunderToAmount(
+        address funder,
+        uint256 amountToUpdate
+    ) external {
         require(
             msg.sender == erc20Addr,
             "You dont have permission to call this function"
